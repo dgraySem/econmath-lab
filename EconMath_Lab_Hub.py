@@ -1075,8 +1075,6 @@ if page == "🧑‍🏫 Instructor":
 
     if authorized:
         df_conf, source = load_confidence()
-         if authorized:
-        df_conf, source = load_confidence()
 
         with st.expander("🔧 Test Google Sheets connection"):
             if not sheets_configured():
@@ -1087,9 +1085,6 @@ if page == "🧑‍🏫 Instructor":
                     st.success(f"Connected to tab '{ws.title}'.")
                 except Exception as e:
                     st.error(f"{type(e).__name__}: {e}")
-        
-        # Safely extract the source badge using .get() to prevent KeyErrors
-        badge_options = {   
         
         # Safely extract the source badge using .get() to prevent KeyErrors
         badge_options = {
