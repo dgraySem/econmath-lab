@@ -7,6 +7,7 @@
 import datetime as dt
 import math
 import os
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -54,6 +55,7 @@ section[data-testid="stSidebar"] .stMarkdown div, section[data-testid="stSidebar
 # ======================
 
 CONF_PATH = "confidence_log.csv"
+LOCAL_TZ = ZoneInfo("America/New_York")   # record times in Philadelphia time, not server (UTC) time
 
 # Month-end frequency alias: "M" was renamed to "ME" in newer pandas.
 try:
@@ -290,8 +292,8 @@ def read_sheet_rows() -> pd.DataFrame:
 def log_confidence(lab: str, when: str, score: int) -> str:
     """Logs to Memory (always), tries Sheets (if configured), and backups to CSV."""
     row_dict = {
-        "timestamp": dt.datetime.now().isoformat(timespec="seconds"),
-        "date": dt.date.today().isoformat(),
+        "timestamp": dt.datetime.now(LOCAL_TZ).replace(tzinfo=None).isoformat(timespec="seconds"),
+        "date": dt.datetime.now(LOCAL_TZ).date().isoformat(),
         "lab": lab, 
         "when": when, 
         "score": int(score)
