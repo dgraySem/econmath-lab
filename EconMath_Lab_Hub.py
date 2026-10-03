@@ -64,6 +64,58 @@ except ValueError:
 
 FACES = {1: "😟 1", 2: "😕 2", 3: "😐 3", 4: "🙂 4", 5: "😃 5"}
 
+# ----------------------
+# Course settings (edit these three lines to change the extra-credit offer)
+# ----------------------
+EXTRA_CREDIT_ON = True        # False hides every extra-credit message
+POINTS_PER_LAB = 10           # 10 labs x 10 points = 100 points
+SUBMIT_WHERE = "D2L"          # where students turn in their lab write-up
+
+WHEN_START, WHEN_END = "Start of session", "End of session"
+
+# One short write-up question per lab. Students answer it in D2L, not in the app,
+# so nothing a student writes for credit is ever stored with the research data.
+LAB_PROMPTS = {
+    "Paycheck": "Set the sliders to a job you have or want. What is the slope of your pay line, and what does that number mean in plain words?",
+    "Inflation": "Use a real price that went up for you (rent, food, gas). What was the percent change, and how did you calculate it?",
+    "Supply & Demand": "Move one slider and describe what happened to the equilibrium price and quantity. Give a real-world event that would cause that same shift.",
+    "Marginal": "Pick a quantity and a market price. Should the firm make one more unit? Explain using marginal cost.",
+    "Credit": "Compare the same loan at two different APRs. How much more do you owe at the higher rate, and why does the gap grow every year?",
+    "College": "With your own sliders, what is your opportunity cost of college, and in what year does the degree path break even?",
+    "Philadelphia": "Build a budget for an apartment you might actually rent. Does it clear the 30% guideline? What is the smallest change that would fix it?",
+    "Wealth": "How large is the gap between Student A and Student B at age 65 with your settings? Explain in two sentences where the gap comes from.",
+    "Translator": "Choose one expression and write, in your own words, what it means and how you would say it out loud to a friend.",
+    "Economy": "Set inflation above wage growth. What happens to real income over 20 years, and what does that mean for a family's budget?",
+}
+STUDENT_LABS = list(LAB_PROMPTS)
+
+# Appendix B information statement. Replace this text with the exact wording
+# approved in your IRB application if it differs.
+STUDY_STATEMENT = """
+**What this is.** Your instructor, Dr. Damon T. Gray, is studying whether this app helps students feel more
+comfortable with the math in economics. The study is titled *Math You Can Use: Reducing Mathematics Anxiety in
+Introductory Economics Through an AI-Powered Interactive Learning Platform* (Cheyney University IRB approval
+CU-IRB-2026-002).
+
+**What you are asked to do.** At the start and at the end of a lab, the sidebar asks one question:
+*"How comfortable are you with today's math?"* You answer on a scale from 1 to 5. That is the whole study.
+
+**It is voluntary.** You may use every lab without ever logging a rating. Logging or not logging a rating has
+**no effect on your grade**, including any extra credit.
+
+**It is anonymous.** The app saves only the date and time, the lab name, whether it was the start or the end of
+the session, and your 1 to 5 rating. It does not save your name, student ID, email, or IP address, and there is
+no login. Your instructor cannot tell who logged a rating or who did not.
+
+**Risks and benefits.** The risk is no greater than ordinary classwork. Your ratings help improve how this course
+is taught. Results are reported only as class-wide totals and averages.
+
+**Consent.** Logging a rating means you agree to take part. You can stop at any time simply by not logging.
+
+**Questions.** Dr. Damon T. Gray, dgray@cheyney.edu, 610-399-2031. Questions about your rights as a participant:
+Dr. Steven G. Hughes, Chair, Cheyney University Institutional Review Board, shughes@cheyney.edu, (610) 399-2400.
+"""
+
 def three_levels(new_fn, math_fn, challenge_fn, key: str):
     """Render the 'Tell Me Like I'm New → Show Me the Math → Challenge Me' sub-tabs."""
     t1, t2, t3 = st.tabs(["🌱 Simple", "🧮 The Math", "🔥 Challenge"])
@@ -212,9 +264,28 @@ def get_worksheet():
         ws = sh.worksheet("confidence")
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title="confidence", rows=2000, cols=len(SHEET_HEADER))
-    if not ws.get_values("A1:A1"):
-        ws.append_row(SHEET_HEADER, value_input_option="USER_ENTERED")
+    # Make sure row 1 is the header. (An empty sheet used to be mistaken for one that
+    # already had a header, so rows were saved without column names.)
+    first_row = [str(c).strip() for c in ws.row_values(1)]
+    if not any(first_row):
+        ws.update(range_name="A1", values=[SHEET_HEADER])
+    elif first_row[0].lower() != "timestamp":
+        ws.insert_row(SHEET_HEADER, index=1)
     return ws
+
+def read_sheet_rows() -> pd.DataFrame:
+    """Read every logged row from the Sheet as a clean DataFrame (raises on failure)."""
+    values = get_worksheet().get_all_values()
+    n = len(SHEET_HEADER)
+    rows = [(list(r) + [""] * n)[:n] for r in values]
+    rows = [r for r in rows if any(str(c).strip() for c in r)]
+    if rows and str(rows[0][0]).strip().lower() == "timestamp":
+        rows = rows[1:]
+    df = pd.DataFrame(rows, columns=SHEET_HEADER)
+    df["score"] = pd.to_numeric(df["score"], errors="coerce")
+    df["lab"] = df["lab"].astype(str).str.strip()
+    df["when"] = df["when"].astype(str).str.strip().str.lower()
+    return df.dropna(subset=["score"]).reset_index(drop=True)
 
 def log_confidence(lab: str, when: str, score: int) -> str:
     """Logs to Memory (always), tries Sheets (if configured), and backups to CSV."""
@@ -233,7 +304,8 @@ def log_confidence(lab: str, when: str, score: int) -> str:
     if sheets_configured():
         try:
             ws = get_worksheet()
-            ws.append_row(list(row_dict.values()), value_input_option="USER_ENTERED")
+            ws.append_row(list(row_dict.values()), value_input_option="USER_ENTERED",
+                          table_range="A1")
             return "sheets"
         except Exception:
             pass  # Fall through to CSV backup if API fails
@@ -251,11 +323,7 @@ def load_confidence():
     # Try Google Sheets
     if sheets_configured():
         try:
-            df = pd.DataFrame(get_worksheet().get_all_records())
-            if not df.empty:
-                df["score"] = pd.to_numeric(df["score"], errors="coerce")
-                df = df.dropna(subset=["score"])
-            return df, "sheets"
+            return read_sheet_rows(), "sheets"
         except Exception:
             pass
 
@@ -308,19 +376,57 @@ with st.sidebar:
     st.markdown("### 🧠 Math Confidence")
     current_lab = page.split(" ", 1)[1] if " " in page else page
     
+    logged = st.session_state.setdefault("logged", set())
+    visited = st.session_state.setdefault("visited", set())
+
     if current_lab not in ("Start", "Instructor"):
-        st.caption(f"Logging for: **{current_lab}** · anonymous")
-        conf_when = st.radio("When?", ["Start of session", "End of session"], horizontal=True, key="conf_when")
-        conf_score = st.select_slider("How comfortable are you with today's math?",
+        visited.add(current_lab)
+        has_before = (current_lab, "before") in logged
+        has_after = (current_lab, "after") in logged
+
+        # When the student opens a different lab, point the tracker at the right step.
+        if st.session_state.get("_conf_lab") != current_lab:
+            st.session_state["_conf_lab"] = current_lab
+            st.session_state["conf_when"] = WHEN_END if (has_before and not has_after) else WHEN_START
+
+        st.caption(f"Logging for: **{current_lab}** · anonymous · optional")
+        st.markdown(f"{'✅' if has_before else '⬜'} Start score · {'✅' if has_after else '⬜'} End score")
+        conf_when = st.radio("When?", [WHEN_START, WHEN_END], horizontal=True, key="conf_when")
+        when_code = "before" if conf_when == WHEN_START else "after"
+        st.select_slider("How comfortable are you with today's math?",
             options=list(FACES), format_func=FACES.get, value=3, key="conf_score")
-        if st.button("Log my confidence", key="conf_btn", use_container_width=True):
-            dest = log_confidence(current_lab, "before" if conf_when.startswith("Start") else "after", conf_score)
-            if dest == "sheets":
-                st.success("✅ Logged securely!")
+
+        def _log_click(lab, code):
+            dest = log_confidence(lab, code, st.session_state.get("conf_score", 3))
+            st.session_state["logged"].add((lab, code))
+            saved = "✅ Logged securely!" if dest == "sheets" else "✅ Logged for this session!"
+            if code == "before":
+                st.session_state["conf_when"] = WHEN_END
+                st.session_state["_conf_msg"] = saved + " Do the lab, then come back here and log your **End** score."
             else:
-                st.success("✅ Logged for this session!")
+                st.session_state["_conf_msg"] = saved + " Thank you. That lab is complete."
+
+        already = (current_lab, when_code) in logged
+        st.button("Log my confidence", key="conf_btn", use_container_width=True,
+                  disabled=already, on_click=_log_click, args=(current_lab, when_code))
+        msg = st.session_state.pop("_conf_msg", None)
+        if msg:
+            st.success(msg)
+        elif has_before and has_after:
+            st.caption("Both scores are logged for this lab. Pick another lab above.")
+        elif already:
+            st.caption("Already logged. Switch to the other option to log that score.")
     else:
         st.info("👆 **Please do this first:**\n\nClick the **Paycheck** tab (or any other lab) above to log your starting score.")
+
+    with st.expander(f"📋 My progress this visit ({len(visited)} of {len(STUDENT_LABS)} labs opened)"):
+        for lab_name in STUDENT_LABS:
+            mark = "✅" if lab_name in visited else "⬜"
+            b = "start ✓" if (lab_name, "before") in logged else "start –"
+            a = "end ✓" if (lab_name, "after") in logged else "end –"
+            st.markdown(f"{mark} **{lab_name}** · {b} · {a}")
+        st.caption("This list is only on your screen and resets when you close or reload the page. "
+                   "Nothing here is sent to your instructor.")
 
     st.markdown("---")
     with st.expander("⚙️ Data settings"):
@@ -365,7 +471,23 @@ $$\\text{Story} \\rightarrow \\text{Numbers} \\rightarrow \\text{Graph} \\righta
     with c3:
         st.markdown("**🏙️ Your City, Your Data**\n\nPhiladelphia Lab • Wealth Simulator • Math Translator")
         
-    st.info("👆 **Please do this first:** Click the **💵 Paycheck** tab (or any other lab in the sidebar) to log your starting score. Log it again when you finish! It's anonymous, and it helps make this course a **gateway**, not a filter.")
+    st.subheader("How each lab works")
+    steps = [
+        "**Pick a lab** in the sidebar (start with 💵 Paycheck).",
+        "**Log your Start score** under 🧠 Math Confidence. One click, anonymous, optional.",
+        "**Do the lab.** Move the sliders and open the Simple, The Math, and Challenge tabs.",
+        "**Log your End score** in the same place when you finish.",
+    ]
+    if EXTRA_CREDIT_ON:
+        steps.append(f"**Extra credit:** follow the *Finish this lab* box at the bottom of each lab and submit in "
+                     f"{SUBMIT_WHERE}. Each lab is worth **{POINTS_PER_LAB} points**, up to "
+                     f"**{POINTS_PER_LAB * len(STUDENT_LABS)} points** for all {len(STUDENT_LABS)} labs.")
+    st.markdown("\n".join(f"{i}. {t}" for i, t in enumerate(steps, 1)))
+    st.info("Your confidence scores are anonymous, and they help make this course a **gateway**, not a filter. "
+            "Each lab takes about 15 minutes.")
+
+    with st.expander("📄 About the research study (please read)", expanded=True):
+        st.markdown(STUDY_STATEMENT)
     
     if not HAS_DATA:
         st.warning("Live data is offline right now — every lab still runs fully on its built-in simulations.")
@@ -1059,6 +1181,36 @@ if page == "🎮 Economy":
              "You just built a structural model — the kind professionals get paid for.", "ec")
 
 # ----------------------
+# Finish box: shown at the bottom of every student lab
+# ----------------------
+if current_lab in LAB_PROMPTS:
+    st.divider()
+    st.subheader("🏁 Finish this lab")
+    _has_after = (current_lab, "after") in st.session_state.get("logged", set())
+    if _has_after:
+        st.success("Your End confidence score is logged. Thank you!")
+    else:
+        st.info("👈 Before you leave, log your **End** confidence score in the sidebar. "
+                "It is anonymous and optional, and it takes one click.")
+    if EXTRA_CREDIT_ON:
+        st.markdown(f"""
+**Extra credit ({POINTS_PER_LAB} points):** submit these two things in {SUBMIT_WHERE} under *EconMath Lab: {current_lab}*.
+
+1. A **screenshot** of this lab showing your own slider settings.
+2. A **two or three sentence answer** to this question:
+
+> {LAB_PROMPTS[current_lab]}
+
+Your extra credit is based only on what you submit in {SUBMIT_WHERE}. It does **not** depend on whether you log a
+confidence score, and your instructor cannot see who logged one.
+""")
+    _idx = STUDENT_LABS.index(current_lab)
+    if _idx + 1 < len(STUDENT_LABS):
+        st.caption(f"Next lab: **{STUDENT_LABS[_idx + 1]}** (choose it in the sidebar).")
+    else:
+        st.caption("That was the last lab. Well done!")
+
+# ----------------------
 # Tab 11: Instructor Dashboard
 # ----------------------
 if page == "🧑‍🏫 Instructor":
@@ -1083,6 +1235,8 @@ if page == "🧑‍🏫 Instructor":
                 try:
                     ws = get_worksheet()
                     st.success(f"Connected to tab '{ws.title}'.")
+                    n_rows = len(read_sheet_rows())
+                    st.success(f"Read test passed: {n_rows} response(s) stored in the Sheet.")
                 except Exception as e:
                     st.error(f"{type(e).__name__}: {e}")
         
@@ -1109,7 +1263,24 @@ if page == "🧑‍🏫 Instructor":
             means = pivot["mean"].unstack().reindex(columns=["before", "after"])
             if {"before", "after"}.issubset(means.columns):
                 means["Δ (after − before)"] = means["after"] - means["before"]
+            counts = pivot["count"].unstack().reindex(columns=["before", "after"]).fillna(0).astype(int)
+            means["n before"] = counts["before"]
+            means["n after"] = counts["after"]
             st.dataframe(means.round(2), use_container_width=True)
+            st.caption("Responses are anonymous and cannot be matched to individual students, so compare the "
+                       "before and after groups for each lab. A much smaller 'n after' than 'n before' means "
+                       "students are leaving without logging an End score.")
+
+            wk = df_conf.copy()
+            wk["week"] = pd.to_datetime(wk["date"], errors="coerce").dt.to_period("W").dt.start_time
+            wk = wk.dropna(subset=["week"]).groupby("week").size()
+            if len(wk) > 0:
+                fig_wk = go.Figure(go.Bar(x=[d.strftime("%b %d") for d in wk.index], y=wk.values,
+                                          marker_color="#0B1F3A"))
+                fig_wk.update_layout(template="plotly_white", height=320, font=dict(size=14),
+                                     title=dict(text="Responses logged per week", font=dict(size=18)),
+                                     xaxis_title="Week starting", yaxis_title="Responses")
+                st.plotly_chart(fig_wk, use_container_width=True, key="instr_wk")
 
             labs_present = sorted(df_conf["lab"].unique())
             fig_conf = go.Figure()
@@ -1124,6 +1295,6 @@ if page == "🧑‍🏫 Instructor":
 
             st.download_button("⬇️ Download raw confidence CSV", df_conf.to_csv(index=False).encode("utf-8"),
                                "confidence_log.csv", "text/csv", key="instr_dl")
-        st.caption("Research note: with Google Sheets configured, responses persist across redeploys and you can "
-                   "watch them arrive live in the Sheet. Before treating before/after deltas as publishable SoTL "
-                   "data, secure IRB approval; anonymous formative course-improvement use is standard practice.")
+        st.caption("Research note: with Google Sheets configured, responses persist across restarts and you can "
+                   "watch them arrive live in the Sheet. Data collection follows protocol CU-IRB-2026-002: "
+                   "anonymous, voluntary, and unrelated to grading.")
